@@ -64,6 +64,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /workspace
 
 # Carry the resolved venv and project source forward from the builder.
+# /opt/uv/python must be copied alongside /opt/venv because the venv's python
+# binary is a symlink into the uv-managed interpreter tree; without it the
+# symlink is dangling and `python` cannot be exec'd in the runtime stage.
+COPY --from=builder /opt/uv/python /opt/uv/python
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build /workspace
 
