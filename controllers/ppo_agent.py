@@ -77,24 +77,29 @@ class PPOAgent:
                 seed=seed,
             )
 
-        self._model = PPO(
-            policy=str(a.policy),
-            env=vec_env,
-            learning_rate=float(a.learning_rate),
-            n_steps=n_steps,
-            batch_size=batch_size,
-            n_epochs=int(a.n_epochs),
-            gamma=float(a.gamma),
-            gae_lambda=float(a.gae_lambda),
-            clip_range=float(a.clip_range),
-            ent_coef=float(a.ent_coef),
-            vf_coef=float(a.vf_coef),
-            max_grad_norm=float(a.max_grad_norm),
-            policy_kwargs={"net_arch": list(a.policy_kwargs.net_arch)},
-            device=device,
-            seed=seed,
-            verbose=1,
-        )
+        resume_from = cfg.get("resume_from", None)
+        if resume_from:
+            logger.info("resuming PPO from checkpoint %s", resume_from)
+            self._model = PPO.load(str(resume_from), env=vec_env, device=device)
+        else:
+            self._model = PPO(
+                policy=str(a.policy),
+                env=vec_env,
+                learning_rate=float(a.learning_rate),
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=int(a.n_epochs),
+                gamma=float(a.gamma),
+                gae_lambda=float(a.gae_lambda),
+                clip_range=float(a.clip_range),
+                ent_coef=float(a.ent_coef),
+                vf_coef=float(a.vf_coef),
+                max_grad_norm=float(a.max_grad_norm),
+                policy_kwargs={"net_arch": list(a.policy_kwargs.net_arch)},
+                device=device,
+                seed=seed,
+                verbose=1,
+            )
 
         callbacks = [WandbLoggingCallback(cfg)]
         ckpt = cfg.get("checkpoint", None)
@@ -108,15 +113,28 @@ class PPOAgent:
                 )
             )
 
+        steps_done = getattr(self._model, "num_timesteps", 0) if resume_from else 0
+        remaining = max(int(total_steps) - steps_done, 0)
+        reset_num_timesteps = not bool(resume_from)
+
         logger.info(
-            "PPO.learn: total_steps=%d n_envs=%d device=%s n_steps=%d batch=%d",
+            "PPO.learn: total_steps=%d steps_done=%d remaining=%d n_envs=%d device=%s n_steps=%d batch=%d",
             int(total_steps),
+            steps_done,
+            remaining,
             n_envs,
             device,
             n_steps,
             batch_size,
         )
-        self._model.learn(total_timesteps=int(total_steps), callback=CallbackList(callbacks))
+        if remaining == 0:
+            logger.info("checkpoint already at %d steps; nothing to train", steps_done)
+            return
+        self._model.learn(
+            total_timesteps=remaining,
+            callback=CallbackList(callbacks),
+            reset_num_timesteps=reset_num_timesteps,
+        )
 
         if "results_dir" in cfg:
             final_path = f"{cfg.results_dir}/model"

@@ -87,24 +87,29 @@ class SACAgent:
                 seed=seed,
             )
 
-        self._model = SAC(
-            policy=str(a.policy),
-            env=vec_env,
-            learning_rate=float(a.learning_rate),
-            buffer_size=buffer_size,
-            batch_size=batch_size,
-            gamma=float(a.gamma),
-            tau=float(a.tau),
-            train_freq=int(a.train_freq),
-            gradient_steps=int(a.gradient_steps),
-            learning_starts=int(a.learning_starts),
-            ent_coef=a.ent_coef,
-            target_entropy=a.target_entropy,
-            policy_kwargs={"net_arch": list(a.policy_kwargs.net_arch)},
-            device=device,
-            seed=seed,
-            verbose=1,
-        )
+        resume_from = cfg.get("resume_from", None)
+        if resume_from:
+            logger.info("resuming SAC from checkpoint %s", resume_from)
+            self._model = SAC.load(str(resume_from), env=vec_env, device=device)
+        else:
+            self._model = SAC(
+                policy=str(a.policy),
+                env=vec_env,
+                learning_rate=float(a.learning_rate),
+                buffer_size=buffer_size,
+                batch_size=batch_size,
+                gamma=float(a.gamma),
+                tau=float(a.tau),
+                train_freq=int(a.train_freq),
+                gradient_steps=int(a.gradient_steps),
+                learning_starts=int(a.learning_starts),
+                ent_coef=a.ent_coef,
+                target_entropy=a.target_entropy,
+                policy_kwargs={"net_arch": list(a.policy_kwargs.net_arch)},
+                device=device,
+                seed=seed,
+                verbose=1,
+            )
 
         callbacks = [WandbLoggingCallback(cfg)]
         ckpt = cfg.get("checkpoint", None)
@@ -118,15 +123,28 @@ class SACAgent:
                 )
             )
 
+        steps_done = getattr(self._model, "num_timesteps", 0) if resume_from else 0
+        remaining = max(int(total_steps) - steps_done, 0)
+        reset_num_timesteps = not bool(resume_from)
+
         logger.info(
-            "SAC.learn: total_steps=%d n_envs=%d device=%s batch=%d buffer=%d",
+            "SAC.learn: total_steps=%d steps_done=%d remaining=%d n_envs=%d device=%s batch=%d buffer=%d",
             int(total_steps),
+            steps_done,
+            remaining,
             n_envs,
             device,
             batch_size,
             buffer_size,
         )
-        self._model.learn(total_timesteps=int(total_steps), callback=CallbackList(callbacks))
+        if remaining == 0:
+            logger.info("checkpoint already at %d steps; nothing to train", steps_done)
+            return
+        self._model.learn(
+            total_timesteps=remaining,
+            callback=CallbackList(callbacks),
+            reset_num_timesteps=reset_num_timesteps,
+        )
 
         if "results_dir" in cfg:
             final_path = f"{cfg.results_dir}/model"
