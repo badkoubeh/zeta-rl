@@ -20,20 +20,28 @@ pytestmark = pytest.mark.filterwarnings("ignore")
 
 
 @pytest.fixture
-def cfg():
-    # Force a single CPU worker + tiny rollout so the smoke-train is fast.
+def agent_and_cfg(request):
+    """Compose a config scoped to the requested agent class.
+
+    SAC and PPO have disjoint struct fields (e.g. ``n_epochs`` vs
+    ``learning_starts``), so each agent must be tested against its own
+    config; sharing a single SAC-default config for both causes
+    ``ConfigAttributeError`` when PPO accesses its fields.
+    """
+    agent_cls = request.param
+    is_ppo = agent_cls is PPOAgent
+    agent_name = "ppo" if is_ppo else "sac"
+    overrides = [
+        f"agent={agent_name}",
+        "compute.n_envs=1",
+        "compute.batch_size=8",
+        "compute.n_steps=16",
+    ]
+    if not is_ppo:
+        overrides += ["compute.buffer_size=200", "agent.learning_starts=8"]
     with initialize(config_path="../configs", version_base=None):
-        c = compose(
-            config_name="train",
-            overrides=[
-                "compute.n_envs=1",
-                "compute.batch_size=8",
-                "compute.buffer_size=200",
-                "compute.n_steps=16",
-                "agent.learning_starts=8",
-            ],
-        )
-        return c
+        cfg = compose(config_name="train", overrides=overrides)
+    return agent_cls, cfg
 
 
 def test_agent_modules_import_without_sb3() -> None:
@@ -50,12 +58,14 @@ def test_predict_before_learn_raises() -> None:
         PPOAgent(cfg=None).predict(np.zeros(OBS_DIM))
 
 
-@pytest.mark.parametrize("agent_cls", [SACAgent, PPOAgent])
-def test_learn_predict_save_load_roundtrip(agent_cls, cfg, tmp_path) -> None:
+@pytest.mark.parametrize("agent_and_cfg", [SACAgent, PPOAgent], indirect=True, ids=["SACAgent", "PPOAgent"])
+def test_learn_predict_save_load_roundtrip(agent_and_cfg, tmp_path) -> None:
     """Smoke: train a handful of steps, predict an in-bounds action, and
     round-trip through save/load."""
     pytest.importorskip("stable_baselines3")
     pytest.importorskip("torch")
+
+    agent_cls, cfg = agent_and_cfg
 
     # Keep the run tiny and off wandb.
     cfg.total_steps = 64
